@@ -19,6 +19,7 @@
 #include "Bluetooth_win.h"
 
 #include "../Logger.h"
+#include "AppleCP.h"
 #include "Debug.h"
 #include "OS/Windows.h"
 
@@ -339,6 +340,10 @@ void AdvertisementWatcher::OnReceived(const BluetoothLEAdvertisementReceivedEven
     for (uint32_t i = 0; i < manufacturerDataArray.Size(); ++i) {
         const auto &manufacturerData = manufacturerDataArray.GetAt(i);
         const auto companyId = manufacturerData.CompanyId();
+        if (companyId != AppleCP::VendorId) {
+            continue;
+        }
+
         const auto &data = manufacturerData.Data();
 
 #if defined APD_DEBUG
@@ -353,6 +358,10 @@ void AdvertisementWatcher::OnReceived(const BluetoothLEAdvertisementReceivedEven
 
         receivedData.manufacturerDataMap.try_emplace(
             companyId, data.data(), data.data() + data.Length());
+    }
+
+    if (receivedData.manufacturerDataMap.empty()) {
+        return;
     }
 
     std::lock_guard<std::mutex> lock{_mutex};

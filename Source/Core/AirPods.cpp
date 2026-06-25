@@ -585,15 +585,15 @@ bool Manager::OnAdvertisementReceived(const Bluetooth::AdvertisementWatcher::Rec
 
     Details::Advertisement adv{data};
 
-    LOG(Trace, "AirPods advertisement received. Data: {}, Address Hash: {}, RSSI: {}",
-        Helper::ToString(adv.GetDesensitizedData()), Helper::Hash(data.address), data.rssi);
-
     if (ShouldThrottleAdvertisement(adv.GetAdvState().side)) {
         // Keep the device-lost watchdog alive even when we skip the more expensive
         // per-packet state reconciliation work.
         _stateMgr.ResetLostTimer();
         return true;
     }
+
+    LOG(Trace, "AirPods advertisement received. Data: {}, Address Hash: {}, RSSI: {}",
+        Helper::ToString(adv.GetDesensitizedData()), Helper::Hash(data.address), data.rssi);
 
     auto optUpdateEvent = _stateMgr.OnAdvReceived(std::move(adv));
     if (optUpdateEvent.has_value()) {

@@ -18,12 +18,102 @@
 
 #include "LowAudioLatency.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include <QAudioDeviceInfo>
+#include <QIODevice>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Media.Control.h>
 
 #include "../Logger.h"
-#include "../Application.h"
 
 namespace Core::LowAudioLatency {
+namespace {
+
+using namespace winrt::Windows::Media::Control;
+
+QAudioFormat CreateSilenceFormat(const QAudioDeviceInfo &device)
+{
+    QAudioFormat format;
+    format.setSampleRate(8000);
+    format.setChannelCount(1);
+    format.setSampleSize(16);
+    format.setCodec("audio/pcm");
+    format.setByteOrder(QAudioFormat::LittleEndian);
+    format.setSampleType(QAudioFormat::SignedInt);
+
+    if (!device.isFormatSupported(format)) {
+        format = device.nearestFormat(format);
+    }
+
+    return format;
+}
+
+bool IsSystemMediaPlaying()
+{
+    try {
+        const auto manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+        const auto sessions = manager.GetSessions();
+
+        for (uint32_t i = 0; i < sessions.Size(); ++i) {
+            const auto session = sessions.GetAt(i);
+            if (session.GetPlaybackInfo().PlaybackStatus() ==
+                GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+                return true;
+            }
+        }
+    }
+    catch (...) {
+        LOG(Warn, "LowAudioLatency: Failed to query system media playback state.");
+    }
+
+    return false;
+}
+
+} // namespace
+
+class SilenceDevice final : public QIODevice
+{
+public:
+    explicit SilenceDevice(QObject *parent = nullptr) : QIODevice{parent} {}
+
+    void Start()
+    {
+        open(QIODevice::ReadOnly);
+    }
+
+    void Stop()
+    {
+        close();
+    }
+
+    bool isSequential() const override
+    {
+        return true;
+    }
+
+    qint64 bytesAvailable() const override
+    {
+        return kBufferHint + QIODevice::bytesAvailable();
+    }
+
+protected:
+    qint64 readData(char *data, qint64 maxSize) override
+    {
+        std::memset(data, 0, static_cast<size_t>(std::max<qint64>(0, maxSize)));
+        return maxSize;
+    }
+
+    qint64 writeData(const char *, qint64) override
+    {
+        return -1;
+    }
+
+private:
+    constexpr static inline qint64 kBufferHint = 4096;
+};
 
 Controller::Controller(QObject *parent) : QObject{parent}
 {
@@ -32,44 +122,42 @@ Controller::Controller(QObject *parent) : QObject{parent}
     _initTimer.callOnTimeout([this] {
         if (Initialize()) {
             _initTimer.stop();
+            if (_enabled) {
+                UpdatePlaybackState();
+            }
         }
     });
 
+    _playbackCheckTimer.callOnTimeout([this] { UpdatePlaybackState(); });
+
     if (!Initialize()) {
-        // retry later
         _initTimer.start(kRetryInterval);
     }
 }
+
+Controller::~Controller() = default;
 
 bool Controller::Initialize()
 {
     // issue #20
     //
-    // Constructing `QMediaPlayer` when no audio output device is enabled will cause `play` to
-    // continually raise errors and is unrecoverable.
-    if (QAudioDeviceInfo::availableDevices(QAudio::AudioOutput).empty()) {
+    // Constructing audio output when no audio output device is enabled will cause repeated
+    // playback errors and is unrecoverable until the device list changes.
+    const auto devices = QAudioDeviceInfo::availableDevices(QAudio::AudioOutput);
+    if (devices.empty()) {
         LOG(Warn, "LowAudioLatency: Try to init, but no audio output device is enabled.");
         return false;
     }
 
-    _mediaPlayer = std::make_unique<QMediaPlayer>();
-    _mediaPlaylist = std::make_unique<QMediaPlaylist>();
+    const auto device = QAudioDeviceInfo::defaultOutputDevice();
+    _silenceDevice = std::make_unique<SilenceDevice>();
+    _audioOutput = std::make_unique<QAudioOutput>(device, CreateSilenceFormat(device), this);
 
-    connect(
-        _mediaPlayer.get(), qOverload<QMediaPlayer::Error>(&QMediaPlayer::error), this,
-        &Controller::OnError);
-
-    _mediaPlaylist->addMedia(QUrl{"qrc:/Resource/Audio/Silence.mp3"});
-    _mediaPlaylist->setPlaybackMode(QMediaPlaylist::Loop);
-    _mediaPlayer->setPlaylist(_mediaPlaylist.get());
+    connect(_audioOutput.get(), &QAudioOutput::stateChanged, this, &Controller::OnStateChanged);
 
     _inited = true;
 
     LOG(Info, "LowAudioLatency: Init successful. _enabled: {}", _enabled);
-
-    if (_enabled) {
-        Control(true);
-    }
 
     return true;
 }
@@ -78,25 +166,74 @@ void Controller::Control(bool enable)
 {
     LOG(Info, "LowAudioLatency::Controller Control: {}, _inited: {}", enable, _inited);
 
-    if (_inited) {
-        if (enable) {
-            _mediaPlayer->play();
-        }
-        else {
-            _mediaPlayer->stop();
-        }
-    }
-
     _enabled = enable;
+
+    if (enable) {
+        if (!_inited && !_initTimer.isActive()) {
+            _initTimer.start(kRetryInterval);
+        }
+        UpdatePlaybackState();
+        _playbackCheckTimer.start(kPlaybackCheckInterval);
+    }
+    else {
+        _playbackCheckTimer.stop();
+        Stop();
+    }
 }
 
-void Controller::OnError(QMediaPlayer::Error error)
+void Controller::UpdatePlaybackState()
 {
-    LOG(Warn, "LowAudioLatency::Controller error: {}. Reinit later.", error);
+    if (!_enabled) {
+        Stop();
+        return;
+    }
 
-    _mediaPlayer->stop();
-    _inited = false;
-    _initTimer.start(kRetryInterval);
+    if (IsSystemMediaPlaying()) {
+        Start();
+    }
+    else {
+        Stop();
+    }
+}
+
+void Controller::Start()
+{
+    if (!_inited || !_enabled || !_audioOutput || !_silenceDevice) {
+        return;
+    }
+
+    if (_audioOutput->state() == QAudio::ActiveState || _audioOutput->state() == QAudio::IdleState) {
+        return;
+    }
+
+    _silenceDevice->Start();
+    _audioOutput->start(_silenceDevice.get());
+}
+
+void Controller::Stop()
+{
+    if (_audioOutput) {
+        _audioOutput->stop();
+    }
+    if (_silenceDevice) {
+        _silenceDevice->Stop();
+    }
+}
+
+void Controller::OnStateChanged(QAudio::State state)
+{
+    if (!_enabled) {
+        return;
+    }
+
+    if (state == QAudio::StoppedState && _audioOutput && _audioOutput->error() != QAudio::NoError) {
+        LOG(Warn, "LowAudioLatency::Controller error: {}. Reinit later.", _audioOutput->error());
+        Stop();
+        _audioOutput.reset();
+        _silenceDevice.reset();
+        _inited = false;
+        _initTimer.start(kRetryInterval);
+    }
 }
 
 } // namespace Core::LowAudioLatency
