@@ -341,17 +341,18 @@ void AdvertisementWatcher::OnReceived(const BluetoothLEAdvertisementReceivedEven
         const auto companyId = manufacturerData.CompanyId();
         const auto &data = manufacturerData.Data();
 
-        std::vector<uint8_t> stdData(data.data(), data.data() + data.Length());
-
 #if defined APD_DEBUG
         auto overrideAdv = DebugConfig::GetInstance().GetOverrideAdv();
         if (overrideAdv.has_value()) {
-            stdData = std::move(overrideAdv.value());
-            LOG(Trace, "Adv override: {}", Helper::ToString(stdData));
+            LOG(Trace, "Adv override: {}", Helper::ToString(overrideAdv.value()));
+            receivedData.manufacturerDataMap.insert_or_assign(
+                companyId, std::move(overrideAdv.value()));
+            continue;
         }
 #endif
 
-        receivedData.manufacturerDataMap.try_emplace(companyId, std::move(stdData));
+        receivedData.manufacturerDataMap.try_emplace(
+            companyId, data.data(), data.data() + data.Length());
     }
 
     std::lock_guard<std::mutex> lock{_mutex};
