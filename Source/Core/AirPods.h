@@ -20,6 +20,7 @@
 
 #include <functional>
 #include <chrono>
+#include <utility>
 
 #include "Bluetooth.h"
 #include "AppleCP.h"
@@ -172,7 +173,8 @@ private:
     bool _deviceConnected{false};
     bool _scannerWanted{false};
     bool _automaticEarDetection{false};
-    Helper::Sides<std::optional<TimePoint>> _lastProcessedAdvAt;
+    using ProcessedAdvertisement = std::pair<Details::Advertisement::AddressType, TimePoint>;
+    Helper::Sides<std::optional<ProcessedAdvertisement>> _lastProcessedAdvAt;
 
     ScannerAction OnBoundDeviceConnectionStateChanged(Bluetooth::DeviceState state);
     void OnStateChanged(Details::StateManager::UpdateEvent updateEvent);
@@ -183,7 +185,7 @@ private:
         Bluetooth::AdvertisementWatcher::State state, const std::optional<std::string> &optError);
     void ApplyScannerAction(ScannerAction action);
     void ResetAdvertisementThrottle();
-    bool ShouldThrottleAdvertisement(Side side);
+    bool ShouldThrottleAdvertisement(const Details::Advertisement &adv);
 };
 
 std::vector<Core::Bluetooth::Device> GetDevices();

@@ -43,17 +43,14 @@ Q_SIGNALS:
 
 private:
     constexpr static inline auto kRetryInterval = 30s;
-    constexpr static inline auto kPlaybackCheckInterval = 2s;
-
     std::unique_ptr<QAudioOutput> _audioOutput;
     std::unique_ptr<SilenceDevice> _silenceDevice;
-    QTimer _initTimer, _playbackCheckTimer;
+    QTimer _initTimer;
     bool _inited{false}, _enabled{false};
 
     bool Initialize();
     void Control(bool enable);
 
-    void UpdatePlaybackState();
     void Start();
     void Stop();
     void OnStateChanged(QAudio::State state);

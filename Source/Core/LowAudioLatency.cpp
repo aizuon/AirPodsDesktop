@@ -23,16 +23,11 @@
 
 #include <QAudioDeviceInfo>
 #include <QIODevice>
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Media.Control.h>
 
 #include "../Logger.h"
 
 namespace Core::LowAudioLatency {
 namespace {
-
-using namespace winrt::Windows::Media::Control;
 
 QAudioFormat CreateSilenceFormat(const QAudioDeviceInfo &device)
 {
@@ -49,27 +44,6 @@ QAudioFormat CreateSilenceFormat(const QAudioDeviceInfo &device)
     }
 
     return format;
-}
-
-bool IsSystemMediaPlaying()
-{
-    try {
-        const auto manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-        const auto sessions = manager.GetSessions();
-
-        for (uint32_t i = 0; i < sessions.Size(); ++i) {
-            const auto session = sessions.GetAt(i);
-            if (session.GetPlaybackInfo().PlaybackStatus() ==
-                GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-                return true;
-            }
-        }
-    }
-    catch (...) {
-        LOG(Warn, "LowAudioLatency: Failed to query system media playback state.");
-    }
-
-    return false;
 }
 
 } // namespace
@@ -123,12 +97,10 @@ Controller::Controller(QObject *parent) : QObject{parent}
         if (Initialize()) {
             _initTimer.stop();
             if (_enabled) {
-                UpdatePlaybackState();
+                Start();
             }
         }
     });
-
-    _playbackCheckTimer.callOnTimeout([this] { UpdatePlaybackState(); });
 
     if (!Initialize()) {
         _initTimer.start(kRetryInterval);
@@ -172,23 +144,6 @@ void Controller::Control(bool enable)
         if (!_inited && !_initTimer.isActive()) {
             _initTimer.start(kRetryInterval);
         }
-        UpdatePlaybackState();
-        _playbackCheckTimer.start(kPlaybackCheckInterval);
-    }
-    else {
-        _playbackCheckTimer.stop();
-        Stop();
-    }
-}
-
-void Controller::UpdatePlaybackState()
-{
-    if (!_enabled) {
-        Stop();
-        return;
-    }
-
-    if (IsSystemMediaPlaying()) {
         Start();
     }
     else {

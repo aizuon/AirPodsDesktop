@@ -585,10 +585,7 @@ bool Manager::OnAdvertisementReceived(const Bluetooth::AdvertisementWatcher::Rec
 
     Details::Advertisement adv{data};
 
-    if (ShouldThrottleAdvertisement(adv.GetAdvState().side)) {
-        // Keep the device-lost watchdog alive even when we skip the more expensive
-        // per-packet state reconciliation work.
-        _stateMgr.ResetLostTimer();
+    if (ShouldThrottleAdvertisement(adv)) {
         return true;
     }
 
@@ -648,19 +645,21 @@ void Manager::ResetAdvertisementThrottle()
     _lastProcessedAdvAt.right.reset();
 }
 
-bool Manager::ShouldThrottleAdvertisement(Side side)
+bool Manager::ShouldThrottleAdvertisement(const Details::Advertisement &adv)
 {
+    const auto side = adv.GetAdvState().side;
     auto &lastProcessedAdvAt =
         side == Side::Left ? _lastProcessedAdvAt.left : _lastProcessedAdvAt.right;
     const auto now = Clock::now();
 
     if (lastProcessedAdvAt.has_value() &&
-        now - lastProcessedAdvAt.value() < kAdvertisementThrottleInterval)
+        lastProcessedAdvAt->first == adv.GetAddress() &&
+        now - lastProcessedAdvAt->second < kAdvertisementThrottleInterval)
     {
         return true;
     }
 
-    lastProcessedAdvAt = now;
+    lastProcessedAdvAt = ProcessedAdvertisement{adv.GetAddress(), now};
     return false;
 }
 
